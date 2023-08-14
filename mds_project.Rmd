@@ -1,0 +1,350 @@
+---
+title: "MDS Project"
+author: "Alexey Machikhin"
+date: "2023-03-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(warning=FALSE)
+```
+
+```{r}
+library(readr)
+library(smacof)
+library(ggplot2)
+library(kableExtra)
+library(tidyverse)
+library(psych)
+library(table1)
+library(sjPlot)
+library(corrplot)
+library(GGally)
+library(ggrepel) # to avoid text label overlapping
+```
+
+### **Data Preparation & Preliminary Considerations**
+
+`Pokemon.csv` dataset contains information on all 802 Pokemon from all Seven Generations of Pokemon. The information contained in this dataset include Base Stats, Performance against Other Types, Height, Weight, Classification, Egg Steps, Experience Points, Abilities, etc.
+
+*Data Source*: <https://www.kaggle.com/datasets/rounakbanik/pokemon?resource=download>
+
+This dataset include the following features:
+
+*Features of interest:*
+
+-   `hp`: The Base HP of the Pokemon (health points, i.e. how much damage - usually in terms of physical injury - a Pokemon can withstand);
+-   `attack`: The Base Attack of the Pokemon;
+-   `defense`: The Base Defense of the Pokemon;
+-   `sp_attack`: The Base Special Attack of the Pokemon;
+-   `sp_defense`: The Base Special Defense of the Pokemon;
+-   `speed`: The Base Speed of the Pokemon;
+
+*Additional features:*
+
+-   `name`: The English name of the Pokemon;
+-   `japanese_name`: The Original Japanese name of the Pokemon;
+-   `pokedex_number`: The entry number of the Pokemon in the National Pokedex;
+-   `percentage_male`: The percentage of the species that are male. Blank if the Pokemon is genderless;
+-   `type1`: The Primary Type of the Pokemon;
+-   `type2`: The Secondary Type of the Pokemon;
+-   `classification`: The Classification of the Pokemon as described by the Sun and Moon Pokedex;
+-   `height_m`: Height of the Pokemon in metres;
+-   `weight_kg`: The Weight of the Pokemon in kilograms;
+-   `capture_rate`: Capture Rate of the Pokemon;
+-   `base_egg_steps`: The number of steps required to hatch an egg of the Pokemon;
+-   `abilities`: A stringified list of abilities that the Pokemon is capable of having;
+-   `experience_growth`: The Experience Growth of the Pokemon;
+-   `base_happiness`: Base Happiness of the Pokemon;
+-   `against_x`: Eighteen features that denote the amount of damage taken against an attack of a particular type;
+-   `generation`: The numbered generation which the Pokemon was first introduced;
+-   `is_legendary`: Denotes if the Pokemon is legendary.
+
+#### Use Case for Multidimensional scaling (MDS)
+
+In this project, I conduct MDS to analyze the similarity between Pokemon based on their base stats (also known as *species strengths*). Applying MDS, it is possible to plot Pokemon in a lower-dimensional space based on their species strengths: HP, attack, defense, special attack, special defense and speed. This can give insights into which Pokemon are similar in terms of their base stats and which ones are different.
+
+A species' base stats range from values of 1 to 255, and are often the prime representation of the potential a Pokemon species has in battle. Thus for instance, some Pokemon have relatively low attack and special attack compared to their defense and special defense, which makes this type of Pokemon mainly defensive. The other Pokemon, on the contrary, may be mostly attackers - however in exchange for their defense stats.
+
+I also assume that normalization of data as a preliminary procedure is not required, as the features are on a similar scale (1 to 255).
+
+Special attack and special defense are not excluded from a sample, since these stats are not the same as casual attack and defense. Thus, base attack and defense are used for physical moves, while special attack and defense are used for special moves. These all stats should be analyzed jointly but not separately.
+
+*Note:* The base stats as the features of interest are determined in accordance with Bulbagarden - the largest Pokemon series fan community wiki (See more: <https://bulbapedia.bulbagarden.net/wiki/Base_stats#Differences>)
+
+```{r}
+# Data Loading
+pokemon <-  read_csv('data/pokemon.csv')
+```
+
+```{r}
+# NA Detection 
+colSums(is.na(pokemon))
+```
+
+There are no missing values among the features of interest.
+
+*Example of data:*
+
+```{r}
+kable(t(pokemon[pokemon$name == 'Pikachu', ]))
+```
+
+```{r, echo=FALSE, out.width='50%', fig.cap="Pikachu"}
+knitr::include_graphics("pics/pikachu.png")
+```
+
+Pikachu is the most famous Pokemon of the first generation.
+
+### Discriptive statistics
+
+```{r}
+# Summary Statistics Table for Base Stats
+desc = describe(pokemon[c('hp', 'attack', 'sp_attack', 'defense', 'sp_defense', 'speed')])
+class(desc) <- "data.frame"
+desc = desc[,c("n", "mean", "median", "sd", "min", "max", "skew", "kurtosis")]
+
+desc %>% kbl(digits = 2) %>%
+  kable_classic(full_width = FALSE, html_font = "Cambria")
+```
+
+```{r}
+par(mfrow=c(2,3), pty = "s")
+hist(pokemon$hp, col = '#d1615d', xlab = 'HP', main = '')
+hist(pokemon$attack, col = '#e49444', xlab = 'Attack', main = '')
+hist(pokemon$defense, col = '#e7ca60', xlab = 'Defense', main = '')
+hist(pokemon$sp_attack, col = '#5778a4', xlab = 'Special Attack', main = '')
+hist(pokemon$sp_defense, col = '#6a9f58', xlab = 'Special Defense', main = '')
+hist(pokemon$speed, col = '#f1a2a9', xlab = 'Speed', main = '')
+```
+
+-   From the histograms and the summary table above, it is seen that distributions of all base stats are slightly right-skewed. The shapes of distributions are similar with close means and medians.
+
+```{r}
+pokemon$type1 <- as.factor(pokemon$type1)
+pokemon$generation <-  as.factor(pokemon$generation)
+pokemon$is_legendary <- as.factor(pokemon$is_legendary)
+
+table1(~ type1 + generation + is_legendary, 
+       data = pokemon,
+       transpose = T,
+       caption = 'Distribution of Primary Types and Generations')
+```
+
+There is disproportion between non-legendary and legendary Pokemon in the dataset. However, this is not surprising considering that legendary Pokemon is a rare type of units. Despite this disproportion, I do not exclude legendary Pokemon from the dataset when conducting MDS analysis because doing so may introduce bias into the results.
+
+Legendary Pokemon are often unique and distinct from other Pokemon in terms of their base stats, appearances, and characteristics. Excluding them from the dataset may result in a loss of important information that could potentially affect the interpretation of the MDS results. Furthermore, the inclusion of legendary Pokemon in the dataset can provide a more comprehensive representation of the overall similarities and differences between Pokemon. This can help to create a more accurate and meaningful map of the similarities and differences between the Pokemon in the dataset.
+
+```{r}
+table1(~ hp + attack + sp_attack + defense + sp_defense + speed | generation,
+       data = pokemon, 
+       render.continuous=c(.="Mean", .="SD", .="Median [Min, Max]"), 
+       caption = 'Base Stats by Generation Summary')
+```
+
+```{r}
+# this script computes means of all base stats by generations 
+generations_stats <- pokemon %>%
+  group_by(generation) %>%
+    summarize(across(all_of(c('hp', 'attack', 'sp_attack', 'defense', 
+                              'sp_defense', 'speed')), mean, na.rm = T)) 
+  
+# reshaping data to long format for plotting
+means_by_generation_long <- pivot_longer(generations_stats, cols = -generation, 
+                                       names_to = "stats", values_to = "value")
+```
+
+```{r}
+# hist -----
+ggplot(means_by_generation_long, aes(x = generation, y = value, fill = stats)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(vars(stats), ncol = 2) +
+  scale_fill_manual(values = c('#d1615d','#e49444','#e7ca60',
+                                        '#5778a4','#6a9f58','#f1a2a9')) +
+  xlab("Generation") +
+  ylab("Mean") +
+  ggtitle("Means of Base Stats by Generation") +
+  guides(color = guide_legend(title = "base stats")) +
+  # adding error bars
+  geom_errorbar(aes(ymin=value-sd(value), ymax=value+sd(value)), 
+                width=.2,
+                position=position_dodge(.9)) +
+  theme_bw()
+```
+
+-   Distributions of means of base stats by all the 7 generations are uniform. This indicates that means of base stats almost do not differ across all the generations. Error bars were also added to demonstrate that they overlap, which means that bars do not differ within each plot.
+
+##### Exploring relationships between features (base stats)
+
+```{r}
+cor.matrix <- cor(pokemon[c('hp', 'attack', 'sp_attack', 'defense', 'sp_defense', 'speed')],
+                  method = "pearson", use = "pairwise.complete.obs")
+corrplot(cor.matrix, method = "number", order = "hclust")
+```
+
+-   The coefficients within the correlation matrix above are computed using Pearson method. It is seen that most features are interrelated with positive and significant (see also correlation matrix below) correlations of varying degree: between 0.16 and 0.53 (from weak to moderate and strong). The greatest coefficient is for the relationship between defense and special dense (0.53), wile the weakest one (among significant correlations) is for the pair of speed-HP. The strongest correlations are also for relationships between special defense and special attack (r = .51), defense and attack (r = .47), speed and special attack (r = .44), and attack and HP (r = .41). Besides, there is two base stats that are not interrelated: defense and speed (r = .008, p \> .05).
+
+```{r}
+# 'lowerFn' function is defined to customize the appearance of the scatterplots in the lower half of the matrix. It adds points to the scatterplots and uses the geom_smooth function to add linear regression lines. The method argument of geom_smooth is set to "lm" to fit a linear regression line to the data.
+
+lowerFn <- function(data, mapping, method = "lm") {
+  p <- ggplot(data = data, mapping = mapping) +
+    geom_point(colour = "#5778a4") +
+    geom_smooth(method = method, color = "#d1615d") +
+    theme_bw()
+  p
+}
+
+ggpairs(
+        data = pokemon[c('hp', 'attack', 'sp_attack', 'defense', 'sp_defense', 'speed')],     
+        upper = list(continuous = "cor"), 
+        lower = list(continuous = wrap(lowerFn, method = "lm")),
+        ) 
+```
+
+### MDS Model Fitting
+
+```{r}
+# a subset of attributes to use in the MDS analysis
+mds_data <- pokemon[, c('hp', 'attack', 'sp_attack', 'defense', 'sp_defense', 'speed')]
+```
+
+Next, I compute the distance matrix between the Pokemon based on their base stats using the Euclidean distance:
+
+```{r}
+# distance matrix -----
+dist_matrix <- dist(mds_data, method = "euclidean")
+```
+
+The following script applies MDS to the distance matrix:
+
+```{r}
+mds <- mds(dist_matrix)
+```
+
+*Note:* I do not apply ordinal transformation for base stats, as these features are integer variables that have a wide range of values (1 to 255). Ordinal transformation is typically used for variables that have a limited range of values, such as Likert scales or ratings. So, in the case of the Pokemon dataset, the integer variables can be used directly in the MDS model without any transformation.
+
+```{r}
+mds
+```
+
+### Estimating Goodness-of-fit
+
+```{r}
+# goodness-of-fit -----
+n_objects <- mds$nobj
+stress <- mds$stress
+cat(paste0("Stress value: ", round(stress, 3), "\n"))
+cat(paste0("Number of objects: ", n_objects))
+```
+
+A stress value of 0.188 can be considered as a reasonably good fit for MDS. In general, a stress value of 0.2 or lower is often used as a criterion for a good fit in MDS. It is worth mentioning that this stress value may be as fair result considering, the number of dimensions used in the analysis (2).
+
+It's also important to note that stress value is just one measure of goodness-of-fit in MDS, and it should be interpreted in conjunction with other diagnostic tools such as scree plots, Shepard diagrams or stress decomposition charts. These can help to assess the degree to which the model captures the structure of the original data, and to identify potential sources of error or bias in the analysis.
+
+```{r}
+## scree plot ----
+# the below loop extracts stress values from MDS models with different number of dimensions
+stress_values <- c()
+for (k in 1:10) {
+  mds_solution <- smacof::mds(dist_matrix, ndim = k)
+  stress_values <- c(stress_values, mds_solution$stress)
+}
+
+plot(1:10, stress_values, type = "b", xlab = "Number of dimensions", ylab = "Stress",
+     main = "MDS Scree plot")
+```
+
+Elbow method is applied for scree plots to determine a point, after which y-axis values stop decreasing sharply. In this case the scree plot helps to find optimal number of dimensions. Basically, it is seen that after a number of 6 a stress value quit decreasing and stabilizes as a minimum of stress values. Moreover, even 3 dimensions decrease a stress value to 0.10 (almost twice compared to the initial stress value of 0.18). I could improve stress value by adding the 3rd dimension, however that makes plots much less clear and interepretation of resealts would be complicated.
+
+```{r}
+plot(mds, plot.type = "Shepard")
+```
+
+The closer a point is to the diagonal line in the Shepard diagram, the better the fit between the observed and predicted distances. If the plot shows a tight clustering of points around the diagonal line, it indicates a good fit between the observed and predicted distances, meaning that the MDS solution is an accurate representation of the original data. In this case, we can observe dispersion of points away from the diagonal line, and it indicates not perfect fit between the observed and predicted distances.
+
+```{r}
+plot(mds, plot.type = "stressplot")
+```
+
+Stress decomposition chart is shown to and check for influential observations by stress proportion in %. There are no influential outliers on the Pokemon side (none out of 801 units have a stress proportion larger than 1%).
+
+```{r}
+plot(mds, plot.type = "histogram")
+```
+
+The histogram shows how well the MDS solution has preserved the original distance structure of the data. Ideally, the histogram should have a bell shape, centered at zero, indicating that the MDS solution has accurately captured the distance structure of the original data. In this case, a slightly skewed histogram indicates that the MDS solution might not preserved the distance structure of the original data perfectly, and may require further investigation or refinement.
+
+### MDS Results Visualization & Interpretation
+
+```{r}
+df <- data.frame(mds$conf, name = pokemon$name, type1 = pokemon$type1)
+
+ggplot(df, aes(x = D1, y = D2, label = name)) + 
+  geom_point(size=.5) +
+  geom_text_repel(box.padding = 0.5, point.padding = 0.5, 
+                  max.iter = 500, force = 0.5, overlap = Inf, 
+                  size=3, show.legend = FALSE)  +
+  ggtitle("MDS Analysis Results (Pokemon)") +
+  xlab('Dimesion 1') +
+  ylab('Dimension 2') +
+  theme_bw()
+```
+
+The MDS plot displays the Pokemon in a lower-dimensional space based on species strength. The closer two Pokemon are in the plot, the more similar they are in terms of their base stats.
+
+Plotting all 801 units is not the best solution, since labels as names for point cannot be displayed. However, this plot is still informative, as we can observe several Pokemon located on the periphery of the main cluster of units. These ones may be determined as outliers not being similar to other Pokemon. An exemplary case of such an outlier is Shuckle.
+
+```{r, echo=FALSE, out.width='50%', fig.cap="Shuckle"}
+knitr::include_graphics("pics/shuckle.png")
+```
+
+This turtle, according to Bulbapedia ([https://bulbapedia.bulbagarden.net/wiki/Shuckle\_(Pok%C3%A9mon)](https://bulbapedia.bulbagarden.net/wiki/Shuckle_(Pok%C3%A9mon)){.uri}), has extremely low base stats making this creature namely peaceful, non-battle unit. This is not attacker, difenser or highly mobile unit - that is why it is located far away from all other Pokemon.
+
+To demonstrate primary purpose of MDS as analysis of individual cases and to solve problem with labels display, I also make a random subsample of 50 Pokemon from a frame of MDS results as following:
+
+```{r}
+set.seed(123)
+df_sample <- df[sample(nrow(df), 50), ]
+
+# MDS results with all labels as names of Pokemon
+ggplot(df_sample, aes(x = D1, y = D2, label = name, color = type1)) + 
+  geom_point(size = 3) +
+  geom_text_repel(box.padding = 0.5, point.padding = 0.5, 
+                  max.iter = 500, force = 0.5, overlap = Inf, size=3) +
+  labs(x="Dimension 1", 
+       y="Dimension 2",
+       title="MDS Analysis Results",
+       subtitle="for a random subsample of Pokemon (n = 50)",
+       color="Primary Type") +
+  theme_bw()
+```
+
+Now from this plot, we can see which Pokemon are similar according to their base stats. Labels are colored to make the plot more informative and to check if the similarity between Pokemon follows homogeneity rule (i.e. are more similar units belong to the same primary type or not). As we do not observe clusters of solid color, Pokemon similarity in base stats is not necessarily subject to primary type homogeneity. Though there are similar units of the same type (like Spewpa and Kakuna (bugs) or Lickilicky and Ursaring (normals)), there are also quite similar Pokemon of different types (e.g. Gigalith as a rock and Golisopod as a bug or Eelektrik and Hakamo-o as a dragon).
+
+To obtain more deep insights, I further visualize the similarity/dissimilarity between Pokemon base stats themselves. For this, I conduct MDS on the transposed distance matrix of base stats as follows:
+
+```{r}
+dist_transposed <- dist(t(pokemon[, c('hp', 'attack', 'defense', 
+                                      'sp_attack', 'sp_defense', 'speed')]), 
+                        method = "euclidean") 
+
+mds2 <- mds(dist_transposed) 
+
+plot(mds2,
+     col = c('#e7ca60','#d1615d','#e49444','#5778a4','#6a9f58','#f1a2a9'), 
+     cex = 2,
+     main = 'MDS Analysis Results (base stats similarity)') 
+```
+
+From this graph, mainly two clusters are seen: special defense, special attack and defense are far closer to each other rather than health points, attack and speed. The first cluster may be defined as defensive units who combine rely on defense to produce primary special attacks but who also have high resist from the opponents' special attacks. Meanwhile, the second group of Pokemon are attackers - who rely on attack and speed to produce more damage faster. They also compensate their lack of defense by more health points.
+
+### Conclusions
+
+-   MDS is useful to determine Pokemon as outliers which are dissimilar to the others by species strength when considering the whole sample;
+-   More precisely, MDS can be used to determine similar Pokemon by their base stats and to check similar pairs for groups for homogeneity or heterogeneity by primary type. Thus, there are many similar Pokemon based on species strength of the same type, as well as of separate types;
+-   Finally, MDS is a helpful tool to detect similarity of base stats between Pokemon. Hence, two main groups of units (attackers and defensive ones) are discovered.
+-   Nonetheless, MDS for the upper purposes is not a perfect solution. Complex diagnostics of the MDS model revealed problems with fit between the observed and predicted distances and preservation of distance structure of the original data. This means that MDS solution may not be the best representation of the original data, at least when considering fitting models using two dimensions. Alternatives such as PCA or cluster analysis may be a better opt to complete the above tasks.
+-   Practical significance: 1) choosing a team - by understanding the similarities and differences between Pokemon based on their stats, you can choose a team of Pokemon that complement each other's strengths and weaknesses; 2) developing strategies - Knowing which Pokemon are similar or different by their stats can help you develop strategies for defeating opponents in battles; 3) game design - for game developers, understanding the relationships between base stats and how they impact overall performance can inform the design of new Pokemon and game mechanics.
